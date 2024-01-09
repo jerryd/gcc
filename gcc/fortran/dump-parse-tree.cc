@@ -2690,11 +2690,20 @@ show_code_node (int level, gfc_code *c)
 
     case EXEC_BLOCK:
       {
-	const char* blocktype;
+	const char *blocktype, *sname = NULL;
 	gfc_namespace *saved_ns;
 	gfc_association_list *alist;
 
-	if (c->ext.block.assoc)
+	if (c->ext.block.ns && c->ext.block.ns->code
+	    && c->ext.block.ns->code->op == EXEC_SELECT_TYPE)
+	  {
+	    gfc_expr *fcn = c->ext.block.ns->code->expr1;
+	    blocktype = "SELECT TYPE";
+	    /* expr1 is _loc(assoc_name->vptr)  */
+	    if (fcn && fcn->expr_type == EXPR_FUNCTION)
+	      sname = fcn->value.function.actual->expr->symtree->n.sym->name;
+	  }
+	else if (c->ext.block.assoc)
 	  blocktype = "ASSOCIATE";
 	else
 	  blocktype = "BLOCK";
@@ -2702,7 +2711,7 @@ show_code_node (int level, gfc_code *c)
 	fprintf (dumpfile, "%s ", blocktype);
 	for (alist = c->ext.block.assoc; alist; alist = alist->next)
 	  {
-	    fprintf (dumpfile, " %s = ", alist->name);
+	    fprintf (dumpfile, " %s = ", sname ? sname : alist->name);
 	    show_expr (alist->target);
 	  }
 
@@ -2733,7 +2742,7 @@ show_code_node (int level, gfc_code *c)
       if (c->op == EXEC_SELECT_RANK)
 	fputs ("SELECT RANK ", dumpfile);
       else if (c->op == EXEC_SELECT_TYPE)
-	fputs ("SELECT TYPE ", dumpfile);
+	fputs ("SELECT CASE ", dumpfile); // Preceded by SELECT TYPE construct
       else
 	fputs ("SELECT CASE ", dumpfile);
       show_expr (c->expr1);

@@ -2057,6 +2057,7 @@ gfc_match_varspec (gfc_expr *primary, int equiv_flag, bool sub_flag,
   bool unknown;
   bool inquiry;
   bool intrinsic;
+  bool guessed_type;
   locus old_loc;
   char sep;
 
@@ -2086,6 +2087,18 @@ gfc_match_varspec (gfc_expr *primary, int equiv_flag, bool sub_flag,
 
   if (sym->assoc && sym->assoc->target)
     tgt_expr = sym->assoc->target;
+
+  guessed_type = IS_GUESSED_TYPE (primary);
+
+  /* SELECT TYPE and SELECT RANK temporaries within an ASSOCIATE block, whose
+     selector has not been parsed, can generate errors with array and component
+     refs.. Use 'guessed_type' as a flag to suppress these errors.  */
+  if (!guessed_type
+      && (gfc_peek_ascii_char () == '(' && !sym->attr.dimension)
+      && !sym->attr.codimension
+      && sym->attr.select_type_temporary
+      && !sym->attr.select_rank_temporary)
+    guessed_type = true;
 
   /* For associate names, we may not yet know whether they are arrays or not.
      If the selector expression is unambiguously an array; eg. a full array
@@ -2136,7 +2149,8 @@ gfc_match_varspec (gfc_expr *primary, int equiv_flag, bool sub_flag,
 	sym->ts.u.derived = tgt_expr->ts.u.derived;
     }
 
-  if ((equiv_flag && gfc_peek_ascii_char () == '(')
+  if ((guessed_type && !sym->as && gfc_peek_ascii_char () == '(')
+      || (equiv_flag && gfc_peek_ascii_char () == '(')
       || gfc_peek_ascii_char () == '[' || sym->attr.codimension
       || (sym->attr.dimension && sym->ts.type != BT_CLASS
 	  && !sym->attr.proc_pointer && !gfc_is_proc_ptr_comp (primary)
@@ -2194,7 +2208,7 @@ gfc_match_varspec (gfc_expr *primary, int equiv_flag, bool sub_flag,
   inquiry = false;
   if (m == MATCH_YES && sep == '%'
       && primary->ts.type != BT_CLASS
-      && primary->ts.type != BT_DERIVED)
+      && (primary->ts.type != BT_DERIVED || guessed_type))
     {
       match mm;
       old_loc = gfc_current_locus;
@@ -2209,7 +2223,8 @@ gfc_match_varspec (gfc_expr *primary, int equiv_flag, bool sub_flag,
     gfc_set_default_type (sym, 0, sym->ns);
 
   /* See if there is a usable typespec in the "no IMPLICIT type" error.  */
-  if (sym->ts.type == BT_UNKNOWN && m == MATCH_YES)
+  if ((sym->ts.type == BT_UNKNOWN || guessed_type)
+      && m == MATCH_YES)
     {
       bool permissible;
 
@@ -2228,9 +2243,34 @@ gfc_match_varspec (gfc_expr *primary, int equiv_flag, bool sub_flag,
 	  sym->ts = tgt_expr->ts;
 	}
 
+      /* If this hasn't done the trick and the target expression is a function,
+	 then this must be a derived type if 'name' matches an accessible type
+	 both in this namespace and the as yet unparsed sibling function.  */
+      if (tgt_expr && tgt_expr->expr_type == EXPR_FUNCTION
+	  && (sym->ts.type == BT_UNKNOWN || guessed_type)
+	  && gfc_find_derived_types (sym, gfc_current_ns, name))
+	{
+	  sym->assoc->guessed_type = 1;
+	  /* The first returned type is as good as any at this stage.  */
+	  gfc_symbol **dts = &sym->assoc->derived_types;
+	  tgt_expr->ts.type = BT_DERIVED;
+	  tgt_expr->ts.kind = 0;
+	  tgt_expr->ts.u.derived = *dts;
+	  sym->ts = tgt_expr->ts;
+	  /* Delete the dt list to prevent interference with trans-type.cc's
+	     treatment of derived type decls, even if this process has to be
+	     done again for another primary expression.  */
+	  while (*dts && (*dts)->dt_next)
+	    {
+	      gfc_symbol **tmp = &(*dts)->dt_next;
+	      *dts = NULL;
+	      dts = tmp;
+	    }
+	}
+
       if (sym->ts.type == BT_UNKNOWN)
 	{
-	  gfc_error ("Symbol %qs at %C has no IMPLICIT type", sym->name);
+	  gfc_error ("Symbol %qs at %C has no IMPLICIT type(primary)", sym->name);
 	  return MATCH_ERROR;
 	}
     }
